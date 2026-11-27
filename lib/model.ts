@@ -1,4 +1,4 @@
-// Token Radar, model radar-2: implied value from the snapshot's own figures.
+// Token Radar, model radar-2.1: implied value from the snapshot's own figures.
 //
 // The starter scored every protocol with one flat multiple of TVL (0.25x). That
 // ranks by size alone and says nothing about what a token in that line of business
@@ -78,7 +78,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-2.1';
 
 /** How many pre-token protocols outside the watchlist the early radar carries, by implied value. */
 export const EARLY_ROWS = 200;
@@ -86,12 +86,22 @@ export const EARLY_ROWS = 200;
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 32;
 
+/** One live-token protocol a category is priced against: its name and the figures the ratio came from. */
+export interface CompPeer {
+  name: string;
+  mcap_usd: number;
+  tvl_usd: number;
+  mcap_tvl: number;
+}
+
 /** One category's comparables: the live-token protocols that price it. */
 export interface CategoryComp {
   category: string;
   n: number;
   median_mcap_tvl: number | null;
   multiple: number;
+  /** The largest comparables by market cap, at most three: the ones the detail view names. */
+  peers: CompPeer[];
 }
 
 /** A farm step: the action, what it costs, and how long it takes. */
@@ -177,6 +187,8 @@ export interface RadarData {
   live_size: number;
   total_implied_usd: number;
   comps: CategoryComp[];
+  /** The global median mcap/TVL the thin categories price at, at full precision. */
+  global_median: number;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -250,9 +262,18 @@ export function isRankable(p: SnapshotProtocol): boolean {
  * prices at the global median: one wild comparable (a tiny TVL with a large
  * market cap) must not set a whole category. Categories with no live protocol
  * at all price at the global median too.
+ *
+ * Multiples are stored at full precision, never rounded: a rounded global
+ * median (0.214) and the median itself (0.21380…) would price two rows that
+ * the page both describes as "at the global median" at different multiples,
+ * and the dashboard recomputes each row from the stored multiple, so the
+ * stored number must be the number the formula names. Each category also
+ * carries its largest comparables by name, so the detail view can show the
+ * very protocols a row was priced against instead of whichever live-token
+ * protocols happen to be largest overall.
  */
 export function categoryComps(snapshot: Snapshot, model: ModelConstants = MODEL): { comps: CategoryComp[]; globalMedian: number } {
-  const ratiosByCategory = new Map<string, number[]>();
+  const protocolsByCategory = new Map<string, SnapshotProtocol[]>();
   const allRatios: number[] = [];
   for (const p of snapshot.protocols) {
     if (isPreToken(p) || p.mcap_usd === null || p.tvl_usd <= 0 || p.mcap_usd <= 0) continue;
@@ -260,20 +281,25 @@ export function categoryComps(snapshot: Snapshot, model: ModelConstants = MODEL)
     if (!Number.isFinite(ratio)) continue;
     allRatios.push(ratio);
     const key = p.category ?? 'Other';
-    const list = ratiosByCategory.get(key) ?? [];
-    list.push(ratio);
-    ratiosByCategory.set(key, list);
+    const list = protocolsByCategory.get(key) ?? [];
+    list.push(p);
+    protocolsByCategory.set(key, list);
   }
   const globalMedian = allRatios.length > 0 ? median(allRatios) : 0.2;
   const clamp = (n: number): number => Math.min(model.multiple_cap, Math.max(model.multiple_floor, n));
   const comps: CategoryComp[] = [];
-  for (const [category, ratios] of [...ratiosByCategory.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+  for (const [category, protocols] of [...protocolsByCategory.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const ratios = protocols.map((p) => p.mcap_usd! / p.tvl_usd);
     const med = median(ratios);
     const multiple =
       ratios.length >= 2
         ? clamp((ratios.length * med + model.shrink_k * globalMedian) / (ratios.length + model.shrink_k))
         : clamp(globalMedian);
-    comps.push({ category, n: ratios.length, median_mcap_tvl: Math.round(med * 1000) / 1000, multiple: Math.round(multiple * 1000) / 1000 });
+    const peers = [...protocols]
+      .sort((a, b) => b.mcap_usd! - a.mcap_usd! || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+      .slice(0, 3)
+      .map((p) => ({ name: p.name, mcap_usd: p.mcap_usd!, tvl_usd: p.tvl_usd, mcap_tvl: p.mcap_usd! / p.tvl_usd }));
+    comps.push({ category, n: ratios.length, median_mcap_tvl: med, multiple, peers });
   }
   return { comps, globalMedian };
 }
@@ -433,7 +459,14 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
   const half = Math.max(25, Math.round(capital / 2));
   if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Borrow $${half} against the deposit on ${name} and repay it within the week, so the position shows both sides.`;
   if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return `Swap $${half} through ${name}'s main pool on ${chain} once, so the wallet shows trading as well as liquidity.`;
-  if (c.includes('curator') || c.includes('allocator')) return `Deposit $${half} into a second ${name} vault on a different chain, so the wallet is active in more than one vault.`;
+  if (c.includes('curator') || c.includes('allocator')) {
+    // A second vault on a different chain only exists when the protocol is on
+    // more than one chain; a single-chain curator's second vault is on its own
+    // chain, and the step must not send the wallet somewhere the protocol is not.
+    return p.chains.length >= 2
+      ? `Deposit $${half} into a second ${name} vault on a different chain, so the wallet is active in more than one vault.`
+      : `Deposit $${half} into a second ${name} vault on ${chain}, so the wallet is active in more than one vault.`;
+  }
   if (c.includes('perpetual') || c.includes('derivative')) return `Close the hedge on ${name} and open a fresh one half its size, so the wallet shows repeated trading.`;
   if (c.includes('rwa')) return `Hold the yield asset for a full interest cycle and claim the yield once, so the wallet shows a claim.`;
   if (c.includes('prediction')) return `Settle one market position on ${name} and place a second one in a different market.`;
@@ -536,7 +569,7 @@ export function radarRow(row: BoardRow): RadarRow {
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
-  const { comps } = categoryComps(snapshot, model);
+  const { comps, globalMedian } = categoryComps(snapshot, model);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -551,6 +584,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live_size: live.length,
     total_implied_usd: board.reduce((sum, r) => sum + r.implied_value_usd, 0),
     comps,
+    global_median: globalMedian,
     rows: board.map(radarRow),
     live,
   };

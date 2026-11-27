@@ -1,4 +1,4 @@
-// Token Radar, model radar-2. It reads window.RADAR (written beside dashboard/
+// Token Radar, model radar-2.1. It reads window.RADAR (written beside dashboard/
 // by main.ts) and renders the ranked board, a filterable table, a per-protocol
 // detail view with the model's own inputs, the category comparables and the
 // protocol's farm plan. No network: every byte it shows is in data.js.
@@ -101,7 +101,7 @@
     var half = Math.max(25, Math.round(capital / 2));
     if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Borrow $' + half + ' against the deposit on ' + name + ' and repay it within the week, so the position shows both sides.';
     if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Swap $' + half + " through " + name + "'s main pool on " + chain + ' once, so the wallet shows trading as well as liquidity.';
-    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Deposit $' + half + ' into a second ' + name + ' vault on a different chain, so the wallet is active in more than one vault.';
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return (p.chains && p.chains.length >= 2) ? 'Deposit $' + half + ' into a second ' + name + ' vault on a different chain, so the wallet is active in more than one vault.' : 'Deposit $' + half + ' into a second ' + name + ' vault on ' + chain + ', so the wallet is active in more than one vault.';
     if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return 'Close the hedge on ' + name + ' and open a fresh one half its size, so the wallet shows repeated trading.';
     if (c.indexOf('rwa') >= 0) return 'Hold the yield asset for a full interest cycle and claim the yield once, so the wallet shows a claim.';
     if (c.indexOf('prediction') >= 0) return 'Settle one market position on ' + name + ' and place a second one in a different market.';
@@ -193,14 +193,21 @@
 
   function lede() {
     var growths = DATA.rows.map(function (r) { return r.change_7d; }).filter(function (g) { return g !== null; }).sort(function (a, b) { return a - b; });
-    var medGrowth = growths.length ? growths[Math.floor(growths.length / 2)] : null;
+    // The median the model itself uses: the middle value, or the mean of the two middle ones.
+    var medGrowth = null;
+    if (growths.length) {
+      var mid = Math.floor(growths.length / 2);
+      medGrowth = growths.length % 2 ? growths[mid] : (growths[mid - 1] + growths[mid]) / 2;
+    }
+    // Coverage counted from the board itself, not restated from the watchlist size.
+    var covered = DATA.rows.filter(function (r) { return WATCHLIST[r.slug]; }).length;
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
         el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols outside the watchlist, picked by implied value, not by size. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
+        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: covered + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Total implied value' }), el('b', { text: fmtUsd(DATA.total_implied_usd) })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Median 7-day growth' }), el('b', { text: medGrowth === null ? 'n/a' : fmtPct(medGrowth) }))
@@ -315,7 +322,7 @@
         el('td', { class: 'num', text: 'live' }),
         el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }), el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') }))),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
-        el('td', { class: 'num ' + (r.change_7d !== null && r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
+        el('td', { class: 'num ' + (r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
         el('td', { class: 'num', text: fmtUsd(r.mcap_usd) }),
         el('td', { class: 'num', text: r.mcap_tvl === null ? 'n/a' : r.mcap_tvl.toFixed(2) + 'x' }),
         el('td', null, el('span', { class: 'status live', text: 'already trades' }))
@@ -338,9 +345,9 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x comp_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + 0.015 x extra chains) )'
+        'implied = round( tvl_usd x comp_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + ' + m.breadth_per_chain + ' x min(chains - 1, ' + m.breadth_max_extra + ')) )'
       ),
-      el('p', { class: 'sub', text: 'comp_multiple is the category median market-cap-to-TVL ratio of the live-token protocols in this snapshot, shrunk toward the global median (4 pseudo-observations) and clamped to 0.05-0.60, so one wild comparable cannot set the price; a category with fewer than two live comparables prices at the global median. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every rankable pre-token protocol outside the watchlist, by implied value, and the live-token protocols are set aside with their market caps shown.' })
+      el('p', { class: 'sub', text: 'comp_multiple is the category median market-cap-to-TVL ratio of the live-token protocols in this snapshot, shrunk toward the global median (' + m.shrink_k + ' pseudo-observations) and clamped to ' + m.multiple_floor + '-' + m.multiple_cap + ', so one wild comparable cannot set the price; a category with fewer than two live comparables prices at the global median, ' + DATA.global_median.toFixed(3) + 'x in this snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every rankable pre-token protocol outside the watchlist, by implied value, and the live-token protocols are set aside with their market caps shown.' })
     );
   }
 
@@ -354,10 +361,17 @@
         el('td', { class: 'num', text: c.multiple.toFixed(3) + 'x' })
       ));
     });
+    // Board categories with no live comparable are not in this table: name them,
+    // so the table's silence about them is not mistaken for a price of their own.
+    var compCats = {};
+    DATA.comps.forEach(function (c) { compCats[c.category] = true; });
+    var missing = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).filter(function (c) { return !compCats[c]; }).sort();
+    var caption = 'Category comparables, computed from this snapshot: the live-token protocols that price each category. Categories with fewer than two live comparables price at the global median.';
+    if (missing.length) caption += ' ' + missing.length + ' categories on the board have no live comparable in the snapshot at all and also price at the global median: ' + missing.join(', ') + '.';
     return el('section', { class: 'panel comps' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Category comparables, computed from this snapshot: the live-token protocols that price each category. Categories with fewer than two live comparables price at the global median.' }),
+          el('caption', { class: 'sub', text: caption }),
           el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Live comps' }), el('th', { scope: 'col', text: 'Median mcap / TVL' }), el('th', { scope: 'col', text: 'Multiple used' }))),
           tbody
         )
@@ -366,14 +380,39 @@
   }
 
   function whyRank(row) {
+    var m = DATA.model;
+    var cat = row.category || 'Other';
     var bits = [];
-    bits.push('its ' + fmtUsd(row.tvl_usd) + ' of TVL prices at ' + row.comp_multiple.toFixed(2) + 'x — ' + (row.comp_n >= 2 ? 'the ' + (row.category || 'Other') + ' multiple from ' + row.comp_n + ' live comparables in this snapshot' : 'the global median, as ' + (row.category || 'Other') + ' has fewer than two live comparables'));
-    if (row.change_7d !== null && row.change_7d >= 5) bits.push('7-day growth of ' + fmtPct(row.change_7d) + ' lifts it');
-    if (row.change_7d !== null && row.change_7d <= -10) bits.push('7-day TVL down ' + fmtPct(row.change_7d) + ' holds it back');
-    if (row.age_days !== null && row.age_days >= 730) bits.push(fmtAge(row.age_days) + ' with no token on record adds maturity');
-    if (row.age_days !== null && row.age_days < 180) bits.push('only ' + fmtAge(row.age_days) + ' old, so maturity adds little yet');
-    if ((row.chains || []).length >= 4) bits.push('present on ' + row.chains.length + ' chains');
-    return 'Rank ' + row.rank + ' because ' + bits.join('; ') + '.';
+    // The multiple, said the way the model used it: a category price of its own,
+    // or the global median — and if the median, whether that is for one
+    // comparable or for none.
+    if (row.comp_n >= 2) bits.push('its ' + fmtUsd(row.tvl_usd) + ' of TVL prices at ' + row.comp_multiple.toFixed(2) + 'x — the ' + cat + ' multiple from ' + row.comp_n + ' live comparables in this snapshot');
+    else if (row.comp_n === 1) bits.push('its ' + fmtUsd(row.tvl_usd) + ' of TVL prices at the global median of ' + DATA.global_median.toFixed(3) + 'x — ' + cat + ' has a single live comparable in this snapshot, too few to set a price on its own');
+    else bits.push('its ' + fmtUsd(row.tvl_usd) + ' of TVL prices at the global median of ' + DATA.global_median.toFixed(3) + 'x — ' + cat + ' has no live comparable in this snapshot');
+    // Growth as the model counted it: the clamped figure, with the raw one
+    // named when the clamp bit, and a missing figure said to be missing.
+    if (row.change_7d === null) bits.push('the snapshot carries no 7-day figure for it, so growth counts as neutral');
+    else if (row.change_7d > m.growth_cap) bits.push('7-day TVL growth of ' + fmtPct(row.change_7d) + ' is counted at the +' + m.growth_cap + '% cap and lifts it');
+    else if (row.change_7d >= 5) bits.push('7-day growth of ' + fmtPct(row.change_7d) + ' lifts it');
+    else if (row.change_7d < m.growth_floor) bits.push('7-day TVL fell ' + Math.abs(row.change_7d).toFixed(2) + '%, counted at the ' + m.growth_floor + '% floor, which holds it back');
+    else if (row.change_7d <= -10) bits.push('7-day TVL fell ' + Math.abs(row.change_7d).toFixed(2) + '%, which holds it back');
+    // Age: a missing listing date is an assumption, and the sentence says so.
+    if (row.age_days === null) bits.push('it has no listing date in the snapshot, so maturity assumes ' + m.unknown_age_days + ' days');
+    else if (row.age_days >= 730) bits.push(fmtAge(row.age_days) + ' with no token on record adds maturity');
+    else if (row.age_days < 180) bits.push('only ' + fmtAge(row.age_days) + ' old, so maturity adds little yet');
+    // Breadth: past the cap, more chains add nothing, and the sentence says so.
+    var chainCount = (row.chains || []).length;
+    if (chainCount > m.breadth_max_extra + 1) bits.push('present on ' + chainCount + ' chains (breadth counts at most ' + (m.breadth_max_extra + 1) + ')');
+    else if (chainCount >= 4) bits.push('present on ' + chainCount + ' chains');
+    var text = 'Rank ' + row.rank + ' because ' + bits.join('; ') + '.';
+    // The neighbours, from the board's own order: what the rank sits between.
+    var idx = -1;
+    DATA.rows.forEach(function (r, i) { if (r.slug === row.slug) idx = i; });
+    var near = [];
+    if (idx > 0) near.push(fmtUsd(DATA.rows[idx - 1].implied_value_usd - row.implied_value_usd) + ' behind ' + DATA.rows[idx - 1].name);
+    if (idx >= 0 && idx < DATA.rows.length - 1) near.push(fmtUsd(row.implied_value_usd - DATA.rows[idx + 1].implied_value_usd) + ' ahead of ' + DATA.rows[idx + 1].name);
+    if (near.length) text += ' It sits ' + near.join(' and ') + '.';
+    return text;
   }
 
   var dialog = el('dialog', { class: 'detail', id: 'detail', 'aria-labelledby': 'detail-title' });
@@ -387,7 +426,15 @@
     dialog.textContent = '';
     var steps = farmSteps(row);
     var recomputed = impliedOf(row, DATA.model);
-    var peers = DATA.live.filter(function (l) { return l.category === row.category; }).slice(0, 3);
+    // The comparables are the category's own live-token protocols, carried in
+    // the data by name — not whichever live protocols are largest overall, a
+    // list most categories never appear in.
+    var comp = null;
+    (DATA.comps || []).forEach(function (c) { if (c.category === (row.category || 'Other')) comp = c; });
+    var peers = comp && comp.peers ? comp.peers : [];
+    var notes = [];
+    if (row.change_7d === null) notes.push('The snapshot carries no 7-day figure for this protocol, so its growth multiplier is the neutral 1.0000.');
+    if (row.age_days === null) notes.push('The snapshot carries no listing date for this protocol, so its maturity multiplier assumes ' + DATA.model.unknown_age_days + ' days.');
     var detail = el('div', null,
       el('div', { class: 'detail-head' },
         el('div', null,
@@ -401,7 +448,7 @@
         el('h3', { text: 'Implied value' }),
         el('div', { class: 'equation' },
           el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-          el('div', null, el('span', { text: 'Category multiple' }), el('b', { class: 'num', text: row.comp_multiple.toFixed(2) + 'x (' + (row.comp_n >= 2 ? row.comp_n + ' comps' : 'global median') + ')' })),
+          el('div', null, el('span', { text: 'Category multiple' }), el('b', { class: 'num', text: row.comp_multiple.toFixed(2) + 'x (' + (row.comp_n >= 2 ? row.comp_n + ' comps' : row.comp_n === 1 ? 'global median, 1 comp' : 'global median, no comps') + ')' })),
           el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
           el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: row.growth_multiplier.toFixed(4) })),
           el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
@@ -410,14 +457,16 @@
           el('div', null, el('span', { text: 'Breadth multiplier' }), el('b', { class: 'num', text: row.breadth_multiplier.toFixed(4) })),
           el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
         ),
+        notes.length ? el('p', { class: 'sub', text: notes.join(' ') }) : null,
         el('p', { class: 'why' }, el('b', { text: 'Why this rank. ' }), whyRank(row)),
         el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price. The protocol records no token — that is what the snapshot says, not proof it has none.' }),
-        peers.length ? el('div', null,
+        el('div', null,
           el('h3', { text: 'Priced against' }),
-          el('ul', { class: 'peers' }, peers.map(function (l) {
-            return el('li', { text: l.name + ' — ' + (l.category || 'Other') + ', market cap ' + fmtUsd(l.mcap_usd) + ' on ' + fmtUsd(l.tvl_usd) + ' TVL (' + (l.mcap_tvl === null ? 'n/a' : l.mcap_tvl.toFixed(2) + 'x') + ')' });
-          }))
-        ) : null
+          peers.length ? el('ul', { class: 'peers' }, peers.map(function (l) {
+            return el('li', { text: l.name + ' — market cap ' + fmtUsd(l.mcap_usd) + ' on ' + fmtUsd(l.tvl_usd) + ' TVL (' + l.mcap_tvl.toFixed(2) + 'x)' });
+          })) : el('p', { class: 'sub', text: 'No live-token protocol in this category appears in the snapshot, so this row is priced at the global median, not against named comparables.' }),
+          peers.length && comp && comp.n > peers.length ? el('p', { class: 'sub', text: 'The three largest of the ' + comp.n + ' live comparables in this category; the multiple is their median ratio, shrunk toward the global median.' }) : null
+        )
       ),
       el('section', { class: 'detail-section' },
         el('h3', { text: 'Farm plan' }),
